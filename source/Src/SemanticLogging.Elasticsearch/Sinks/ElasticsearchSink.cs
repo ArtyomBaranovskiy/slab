@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Linq;
 using System.Net;
@@ -10,10 +11,11 @@ using System.Net.Http.Headers;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
-
+using Elasticsearch.Net;
 using Microsoft.Practices.EnterpriseLibrary.SemanticLogging.Properties;
+using Microsoft.Practices.EnterpriseLibrary.SemanticLogging.Schema;
 using Microsoft.Practices.EnterpriseLibrary.SemanticLogging.Utility;
-
+using Nest;
 using Newtonsoft.Json.Linq;
 
 namespace Microsoft.Practices.EnterpriseLibrary.SemanticLogging.Sinks
@@ -71,7 +73,7 @@ namespace Microsoft.Practices.EnterpriseLibrary.SemanticLogging.Sinks
 
             this.instanceName = instanceName;
             this.flattenPayload = flattenPayload ?? true;
-            this.elasticsearchUrl = new Uri(new Uri(connectionString), BulkServiceOperationPath);
+            this.elasticsearchUrl = new Uri(connectionString);
             this.index = index;
             this.type = type;
             var sinkId = string.Format(CultureInfo.InvariantCulture, "ElasticsearchSink ({0})", instanceName);
@@ -155,45 +157,35 @@ namespace Microsoft.Practices.EnterpriseLibrary.SemanticLogging.Sinks
 
         internal async Task<int> PublishEventsAsync(IList<EventEntry> collection)
         {
-            HttpClient client = null;
-
             try
             {
-                client = new HttpClient();
+                var settings = new ConnectionSettings(this.elasticsearchUrl);
+                var client = new ElasticClient(settings);
 
-                string logMessages;
-                using (var serializer = new ElasticsearchEventEntrySerializer(this.index, this.type, this.instanceName, this.flattenPayload))
+                await VerifyIndexExists(client);
+
+                var descriptor = new BulkDescriptor();
+                foreach (var entry in collection)
                 {
-                    logMessages = serializer.Serialize(collection);
+                    var localEntry = new ElasticSearchEntry(entry)
+                    {
+                        InstanceName = instanceName,
+                    };
+                    descriptor.Index<ElasticSearchEntry>(selector => selector.Document(localEntry).Index(index).Type(type));
                 }
-                var content = new StringContent(logMessages);
-                content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
 
-                var response = await client.PostAsync(this.elasticsearchUrl, content, cancellationTokenSource.Token).ConfigureAwait(false);
+                //send bulk request to elastic search: may require cancellation
+                var response = await client.BulkAsync(descriptor);
 
                 // If there is an exception
-                if (response.StatusCode != HttpStatusCode.OK)
+                if (!response.IsValid || response.Errors)
                 {
-                    // Check the response for 400 bad request
-                    if (response.StatusCode == HttpStatusCode.BadRequest)
+                    if (response.ServerError.Status == (int)HttpStatusCode.BadRequest)
                     {
                         var messagesDiscarded = collection.Count();
 
-                        var errorContent = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-
-                        string serverErrorMessage;
-
-                        // Try to parse the exception message
-                        try
-                        {
-                            var errorObject = JObject.Parse(errorContent);
-                            serverErrorMessage = errorObject["error"].Value<string>();
-                        }
-                        catch (Exception)
-                        {
-                            // If for some reason we cannot extract the server error message log the entire response
-                            serverErrorMessage = errorContent;
-                        }
+                        var serverErrorMessage = string.Format(
+                            "Server error type: {0}, message: {1}", response.ServerError.ExceptionType, response.ServerError.Error);
 
                         // We are unable to write the batch of event entries - Possible poison message
                         // I don't like discarding events but we cannot let a single malformed event prevent others from being written
@@ -207,18 +199,13 @@ namespace Microsoft.Practices.EnterpriseLibrary.SemanticLogging.Sinks
                     return 0;
                 }
 
-                var responseString = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-                var responseObject = JObject.Parse(responseString);
-
-                var items = responseObject["items"] as JArray;
-
                 // If the response return items collection
-                if (items != null)
+                if (response.Items != null)
                 {
                     // NOTE: This only works with Elasticsearch 1.0
                     // Alternatively we could query ES as part of initialization check results or fall back to trying <1.0 parsing
                     // We should also consider logging errors for individual entries
-                    return items.Count(t => t["create"]["status"].Value<int>().Equals(201));
+                    return response.Items.Count(item => item.IsValid && item.Status.Equals(201));
 
                     // Pre-1.0 Elasticsearch
                     // return items.Count(t => t["create"]["ok"].Value<bool>().Equals(true));
@@ -236,13 +223,82 @@ namespace Microsoft.Practices.EnterpriseLibrary.SemanticLogging.Sinks
                 SemanticLoggingEventSource.Log.ElasticsearchSinkWriteEventsFailed(ex.ToString());
                 throw;
             }
-            finally
+        }
+
+        private async Task VerifyIndexExists(IElasticClient client)
+        {
+            var existsResponse = await client.IndexExistsAsync(index);
+            if (!existsResponse.IsValid)
             {
-                if (client != null)
+                throw new ElasticsearchServerException(existsResponse.ServerError);
+            }
+            if (!existsResponse.Exists)
+            {
+                var createResponse = await client.CreateIndexAsync(index, CreateMapping);
+                if (!createResponse.IsValid || !createResponse.Acknowledged)
                 {
-                    client.Dispose();
+                    throw new ElasticsearchServerException(createResponse.ServerError);
                 }
             }
+        }
+
+        private CreateIndexDescriptor CreateMapping(CreateIndexDescriptor createIndexDescriptor)
+        {
+            return createIndexDescriptor
+                .Index(index)
+                .AddMapping<ElasticSearchEntry>(mappingDescriptor => mappingDescriptor
+                    .MapFromAttributes()
+                    .Properties(properties => properties
+                        .Object<EventSchema>(o => o
+                            .Name(entry => entry.Schema)
+                            .MapFromAttributes()
+                            .Properties(props => props
+                                .MultiField(field => field
+                                    .Name(schema => schema.EventName)
+                                    .Fields(fields => fields
+                                        .String(s => s.Name(entry => entry.EventName).Index(FieldIndexOption.Analyzed))
+                                        .String(s => s.Name("eventName_").Index(FieldIndexOption.NotAnalyzed))
+                                    )
+                                )
+                                .MultiField(field => field
+                                    .Name(schema => schema.KeywordsDescription)
+                                    .Fields(fields => fields
+                                        .String(s => s.Name(schema => schema.KeywordsDescription).Index(FieldIndexOption.Analyzed))
+                                        .String(s => s.Name("keywordsDescription_").Index(FieldIndexOption.NotAnalyzed))
+                                    )
+                                )
+                                .MultiField(field => field
+                                    .Name(schema => schema.ProviderName)
+                                    .Fields(fields => fields
+                                        .String(s => s.Name(schema => schema.ProviderName).Index(FieldIndexOption.Analyzed))
+                                        .String(s => s.Name("providerName_").Index(FieldIndexOption.NotAnalyzed))
+                                    )
+                                )
+                            )
+                        )
+                        .Object<ReadOnlyCollection<object>>(o => o
+                            .Name(entry => entry.Payload)
+                            .MapFromAttributes()
+                            .Properties(props => props
+                                .MultiField(field => field
+                                    .Name("batch_text")
+                                    .Fields(fields => fields
+                                        .String(s => s.Name("batch_text").Index(FieldIndexOption.Analyzed))
+                                        .String(s => s.Name("batch_text_").Index(FieldIndexOption.NotAnalyzed))
+                                    )
+                                )
+                                .MultiField(field => field
+                                    .Name("showplan_xml")
+                                    .Fields(fields => fields
+                                        .String(s => s.Name("showplan_xml").Index(FieldIndexOption.Analyzed))
+                                        .String(s => s.Name("showplan_xml_").Index(FieldIndexOption.NotAnalyzed))
+                                    )
+                                )
+                            )
+                        )
+                        .String(s => s.Name(entry => entry.InstanceName).Index(FieldIndexOption.NotAnalyzed))
+                    )
+                );
         }
 
         private void FlushSafe()

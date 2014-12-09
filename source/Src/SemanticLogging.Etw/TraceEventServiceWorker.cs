@@ -134,6 +134,9 @@ namespace Microsoft.Practices.EnterpriseLibrary.SemanticLogging.Etw
             // We collect all the manifests and save/terminate process when done
             this.source.UnhandledEvents += e => this.ProcessUnhandledEvent(e);
 
+            this.source.Clr.All += this.ProcessEvent;
+            this.source.Registered.All += this.ProcessEvent;
+
             foreach (var eventSource in this.eventSources)
             {
                 // Bind the provider (EventSource/EventListener) with the session

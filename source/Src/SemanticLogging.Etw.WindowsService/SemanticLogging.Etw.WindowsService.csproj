@@ -109,7 +109,6 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include="SemanticLogging-svc.xml">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
       <SubType>Designer</SubType>
     </Content>
   </ItemGroup>

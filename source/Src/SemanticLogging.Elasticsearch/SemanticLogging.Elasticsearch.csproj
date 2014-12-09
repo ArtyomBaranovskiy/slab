@@ -63,6 +63,7 @@
       <DesignTime>True</DesignTime>
       <DependentUpon>Resource.resx</DependentUpon>
     </Compile>
+    <Compile Include="Sinks\ElasticSearchEntry.cs" />
     <Compile Include="Utility\ElasticsearchEventEntrySerializer.cs" />
     <Compile Include="Sinks\ElasticsearchSink.cs" />
     <Compile Include="ElasticsearchLog.cs" />
