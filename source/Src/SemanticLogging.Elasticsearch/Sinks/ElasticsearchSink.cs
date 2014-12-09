@@ -171,7 +171,7 @@ namespace Microsoft.Practices.EnterpriseLibrary.SemanticLogging.Sinks
                     {
                         InstanceName = instanceName,
                     };
-                    descriptor.Index<ElasticSearchEntry>(selector => selector.Document(localEntry).Index(index).Type(type));
+                    descriptor.Index(CreateIndexDescriptor(localEntry));
                 }
 
                 //send bulk request to elastic search: may require cancellation
@@ -299,6 +299,11 @@ namespace Microsoft.Practices.EnterpriseLibrary.SemanticLogging.Sinks
                         .String(s => s.Name(entry => entry.InstanceName).Index(FieldIndexOption.NotAnalyzed))
                     )
                 );
+        }
+
+        private Func<BulkIndexDescriptor<ElasticSearchEntry>, BulkIndexDescriptor<ElasticSearchEntry>> CreateIndexDescriptor(ElasticSearchEntry entry)
+        {
+            return selector => selector.Document(entry).Index(index).Type(type);
         }
 
         private void FlushSafe()
