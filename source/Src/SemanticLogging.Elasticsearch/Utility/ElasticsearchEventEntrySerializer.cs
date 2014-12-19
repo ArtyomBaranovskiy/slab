@@ -128,7 +128,7 @@ namespace Microsoft.Practices.EnterpriseLibrary.SemanticLogging.Utility
 
         private string GetIndexName(DateTime entryDateTime)
         {
-            return string.Format(CultureInfo.InvariantCulture, "{0}-{1:yyyy.MM.dd}", this.indexName, entryDateTime);
+            return this.indexName;
         }
 
         public void Dispose()
