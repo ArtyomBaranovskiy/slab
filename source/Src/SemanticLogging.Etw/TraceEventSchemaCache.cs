@@ -14,10 +14,16 @@ namespace Microsoft.Practices.EnterpriseLibrary.SemanticLogging.Etw
     internal sealed class TraceEventSchemaCache
     {
         private readonly Dictionary<Guid, IDictionary<int, EventSchema>> schemas = new Dictionary<Guid, IDictionary<int, EventSchema>>();
+        private readonly Dictionary<Guid, IDictionary<string, EventSchema>> illegalSchemas = new Dictionary<Guid, IDictionary<string, EventSchema>>();
         private readonly EventSourceSchemaReader schemaReader = new EventSourceSchemaReader();
 
         internal EventSchema GetSchema(TraceEvent traceEvent)
         {
+            if (traceEvent.ID == TraceEventID.Illegal)
+            {
+                return GetIllegalSchema(traceEvent);
+            }
+
             int eventId = (int)traceEvent.ID;
             EventSchema schema;
             IDictionary<int, EventSchema> providerSchemas;
@@ -34,6 +40,28 @@ namespace Microsoft.Practices.EnterpriseLibrary.SemanticLogging.Etw
                 schema = CreateEventSchema(traceEvent);
                 providerSchemas.Add(eventId, schema);
                 this.schemas[traceEvent.ProviderGuid] = providerSchemas;
+            }
+
+            return schema;
+        }
+
+        private EventSchema GetIllegalSchema(TraceEvent traceEvent)
+        {
+            EventSchema schema;
+            IDictionary<string, EventSchema> providerSchemas;
+            if (!this.illegalSchemas.TryGetValue(traceEvent.ProviderGuid, out providerSchemas))
+            {
+                schema = CreateEventSchema(traceEvent);
+                providerSchemas = new Dictionary<string, EventSchema> { { traceEvent.EventName, schema } };
+                this.illegalSchemas.Add(traceEvent.ProviderGuid, providerSchemas);
+                return schema;
+            }
+
+            if (!providerSchemas.TryGetValue(traceEvent.EventName, out schema))
+            {
+                schema = CreateEventSchema(traceEvent);
+                providerSchemas.Add(traceEvent.EventName, schema);
+                this.illegalSchemas[traceEvent.ProviderGuid] = providerSchemas;
             }
 
             return schema;
