@@ -1,4 +1,8 @@
-﻿namespace Microsoft.Practices.EnterpriseLibrary.SemanticLogging.Sinks
+﻿using System.Collections.Generic;
+using System.Dynamic;
+using System.Linq;
+
+namespace Microsoft.Practices.EnterpriseLibrary.SemanticLogging.Sinks
 {
     /// <summary>
     /// Wrapper for elastic search entries
@@ -24,6 +28,31 @@
         public string LevelString
         {
             get { return Schema.Level.ToString(); }
+        }
+
+        /// <summary>
+        /// Gets prettified payload in the form of key-value pairs
+        /// </summary>
+        public ExpandoObject PrettyPayload
+        {
+            get
+            {
+                var result = new ExpandoObject();
+                IDictionary<string, object> dict = result;
+                foreach (var pair in Schema.Payload.Zip(Payload, (key, value) => new { key, value }))
+                {
+                    //Convert unsigned value to string to allow elasticsearch to handle it
+                    if (pair.value is ulong || pair.value is uint)
+                    {
+                        dict[pair.key] = pair.value.ToString();
+                    }
+                    else
+                    {
+                        dict[pair.key] = pair.value;
+                    }
+                }
+                return result;
+            }
         }
     }
 }

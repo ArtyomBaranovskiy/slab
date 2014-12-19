@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics.Tracing;
 using System.Linq;
+using Newtonsoft.Json;
 
 namespace Microsoft.Practices.EnterpriseLibrary.SemanticLogging.Schema
 {
@@ -113,6 +114,7 @@ namespace Microsoft.Practices.EnterpriseLibrary.SemanticLogging.Schema
         /// Gets the payload names that maps to the event signature parameter names.
         /// </summary>
         /// <value>The event payload.</value>
+        [JsonIgnore]
         public string[] Payload
         {
             get { return this.payload; }

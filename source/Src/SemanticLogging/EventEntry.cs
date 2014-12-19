@@ -12,6 +12,7 @@ using System.Runtime.InteropServices;
 using System.Security;
 using Microsoft.Practices.EnterpriseLibrary.SemanticLogging.Schema;
 using Microsoft.Practices.EnterpriseLibrary.SemanticLogging.Utility;
+using Newtonsoft.Json;
 
 namespace Microsoft.Practices.EnterpriseLibrary.SemanticLogging
 {
@@ -119,6 +120,7 @@ namespace Microsoft.Practices.EnterpriseLibrary.SemanticLogging
         /// Gets the event payload.
         /// </summary>
         /// <value>The event payload.</value>
+        [JsonIgnore]
         public ReadOnlyCollection<object> Payload
         {
             get { return this.payload; }

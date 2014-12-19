@@ -178,7 +178,7 @@ namespace Microsoft.Practices.EnterpriseLibrary.SemanticLogging.Sinks
                 var response = await client.BulkAsync(descriptor);
 
                 // If there is an exception
-                if (!response.IsValid || response.Errors)
+                if (response.ServerError != null)
                 {
                     if (response.ServerError.Status == (int)HttpStatusCode.BadRequest)
                     {
@@ -199,13 +199,20 @@ namespace Microsoft.Practices.EnterpriseLibrary.SemanticLogging.Sinks
                     return 0;
                 }
 
+                var itemErrors = 0;
+                foreach (var item in response.ItemsWithErrors)
+                {
+                    ++itemErrors;
+                    SemanticLoggingEventSource.Log.EventEntrySerializePayloadFailed(item.Error);
+                }
+
                 // If the response return items collection
                 if (response.Items != null)
                 {
                     // NOTE: This only works with Elasticsearch 1.0
                     // Alternatively we could query ES as part of initialization check results or fall back to trying <1.0 parsing
                     // We should also consider logging errors for individual entries
-                    return response.Items.Count(item => item.IsValid && item.Status.Equals(201));
+                    return response.Items.Count(item => item.IsValid && item.Status.Equals(201)) + itemErrors;
 
                     // Pre-1.0 Elasticsearch
                     // return items.Count(t => t["create"]["ok"].Value<bool>().Equals(true));
@@ -227,77 +234,97 @@ namespace Microsoft.Practices.EnterpriseLibrary.SemanticLogging.Sinks
 
         private async Task VerifyIndexExists(IElasticClient client)
         {
-            var existsResponse = await client.IndexExistsAsync(index);
-            if (!existsResponse.IsValid)
+            var indexExistsResponse = await client.IndexExistsAsync(index);
+            VerifyResponse(indexExistsResponse);
+
+            if (!indexExistsResponse.Exists)
             {
-                throw new ElasticsearchServerException(existsResponse.ServerError);
-            }
-            if (!existsResponse.Exists)
-            {
-                var createResponse = await client.CreateIndexAsync(index, CreateMapping);
-                if (!createResponse.IsValid || !createResponse.Acknowledged)
+                var createIndexResponse = await client.CreateIndexAsync(index);
+                if (!createIndexResponse.IsValid)
                 {
-                    throw new ElasticsearchServerException(createResponse.ServerError);
+                    throw new ElasticsearchServerException(createIndexResponse.ServerError);
+                }
+            }
+
+            var typeExistsResponse = await client.TypeExistsAsync(index, type);
+            VerifyResponse(typeExistsResponse);
+
+            if (!typeExistsResponse.Exists)
+            {
+                var createMappingResponse = await client.MapAsync<ElasticSearchEntry>(CreateMapping);
+                if (!createMappingResponse.IsValid)
+                {
+                    throw new ElasticsearchServerException(createMappingResponse.ServerError);
                 }
             }
         }
 
-        private CreateIndexDescriptor CreateMapping(CreateIndexDescriptor createIndexDescriptor)
+        private static void VerifyResponse(IExistsResponse existsResponse)
         {
-            return createIndexDescriptor
+            if (!existsResponse.IsValid)
+            {
+                throw new ElasticsearchServerException(existsResponse.ServerError);
+            }
+        }
+
+        private PutMappingDescriptor<ElasticSearchEntry> CreateMapping(PutMappingDescriptor<ElasticSearchEntry> putMappingDescriptor)
+        {
+            return putMappingDescriptor
                 .Index(index)
-                .AddMapping<ElasticSearchEntry>(mappingDescriptor => mappingDescriptor
-                    .MapFromAttributes()
-                    .Properties(properties => properties
-                        .Object<EventSchema>(o => o
-                            .Name(entry => entry.Schema)
-                            .MapFromAttributes()
-                            .Properties(props => props
-                                .MultiField(field => field
-                                    .Name(schema => schema.EventName)
-                                    .Fields(fields => fields
-                                        .String(s => s.Name(entry => entry.EventName).Index(FieldIndexOption.Analyzed))
-                                        .String(s => s.Name("eventName_").Index(FieldIndexOption.NotAnalyzed))
-                                    )
-                                )
-                                .MultiField(field => field
-                                    .Name(schema => schema.KeywordsDescription)
-                                    .Fields(fields => fields
-                                        .String(s => s.Name(schema => schema.KeywordsDescription).Index(FieldIndexOption.Analyzed))
-                                        .String(s => s.Name("keywordsDescription_").Index(FieldIndexOption.NotAnalyzed))
-                                    )
-                                )
-                                .MultiField(field => field
-                                    .Name(schema => schema.ProviderName)
-                                    .Fields(fields => fields
-                                        .String(s => s.Name(schema => schema.ProviderName).Index(FieldIndexOption.Analyzed))
-                                        .String(s => s.Name("providerName_").Index(FieldIndexOption.NotAnalyzed))
-                                    )
+                .Type(type)
+                .MapFromAttributes()
+                .Properties(properties => properties
+                    .Object<EventSchema>(o => o
+                        .Name(entry => entry.Schema)
+                        .MapFromAttributes()
+                        .Properties(props => props
+                            .MultiField(field => field
+                                .Name(schema => schema.EventName)
+                                .Fields(fields => fields
+                                    .String(s => s.Name(entry => entry.EventName).Index(FieldIndexOption.Analyzed))
+                                    .String(s => s.Name("eventName_").Index(FieldIndexOption.NotAnalyzed))
                                 )
                             )
-                        )
-                        .Object<ReadOnlyCollection<object>>(o => o
-                            .Name(entry => entry.Payload)
-                            .MapFromAttributes()
-                            .Properties(props => props
-                                .MultiField(field => field
-                                    .Name("batch_text")
-                                    .Fields(fields => fields
-                                        .String(s => s.Name("batch_text").Index(FieldIndexOption.Analyzed))
-                                        .String(s => s.Name("batch_text_").Index(FieldIndexOption.NotAnalyzed))
-                                    )
-                                )
-                                .MultiField(field => field
-                                    .Name("showplan_xml")
-                                    .Fields(fields => fields
-                                        .String(s => s.Name("showplan_xml").Index(FieldIndexOption.Analyzed))
-                                        .String(s => s.Name("showplan_xml_").Index(FieldIndexOption.NotAnalyzed))
-                                    )
+                            .MultiField(field => field
+                                .Name(schema => schema.KeywordsDescription)
+                                .Fields(fields => fields
+                                    .String(s => s.Name(schema => schema.KeywordsDescription).Index(FieldIndexOption.Analyzed))
+                                    .String(s => s.Name("keywordsDescription_").Index(FieldIndexOption.NotAnalyzed))
                                 )
                             )
+                            .MultiField(field => field
+                                .Name(schema => schema.ProviderName)
+                                .Fields(fields => fields
+                                    .String(s => s.Name(schema => schema.ProviderName).Index(FieldIndexOption.Analyzed))
+                                    .String(s => s.Name("providerName_").Index(FieldIndexOption.NotAnalyzed))
+                                )
+                            )
+                            .Object<object>(field => field.Name(schema => schema.Payload).Enabled(false))
                         )
-                        .String(s => s.Name(entry => entry.InstanceName).Index(FieldIndexOption.NotAnalyzed))
                     )
+                    .Object<object>(o => o
+                        .Name(entry => entry.PrettyPayload)
+                        .Properties(props => props
+                            .MultiField(field => field
+                                .Name("batch_text")
+                                .Fields(fields => fields
+                                    .String(s => s.Name("batch_text").Index(FieldIndexOption.Analyzed))
+                                    .String(s => s.Name("batch_text_").Index(FieldIndexOption.NotAnalyzed))
+                                )
+                            )
+                            .MultiField(field => field
+                                .Name("showplan_xml")
+                                .Fields(fields => fields
+                                    .String(s => s.Name("showplan_xml").Index(FieldIndexOption.Analyzed))
+                                    .String(s => s.Name("showplan_xml_").Index(FieldIndexOption.NotAnalyzed))
+                                )
+                            )
+                            .String(field => field.Name("connectionObj").Index(FieldIndexOption.NotAnalyzed))
+                        )
+                    )
+                    .String(s => s.Name(entry => entry.InstanceName).Index(FieldIndexOption.NotAnalyzed))
+                    .String(s => s.Name(entry => entry.LevelString).Index(FieldIndexOption.NotAnalyzed))
+                    .Object<object>(field => field.Name(entry => entry.Payload).Enabled(false))
                 );
         }
 
